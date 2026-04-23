@@ -39,6 +39,15 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             raise KeyError(f"Required OHLCV column missing: {col}")
 
+    # EMA_50 needs 50 rows; add margin for MACD signal warmup and ATR.
+    MIN_ROWS = 60
+    if len(df) < MIN_ROWS:
+        raise ValueError(
+            f"add_technical_indicators requires at least {MIN_ROWS} rows, got {len(df)}."
+        )
+
+    df = df.copy()  # prevent mutating caller's DataFrame
+
     close = df['Close']
     high = df['High']
     low = df['Low']
@@ -73,7 +82,8 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['Volume_SMA_20'] = volume.rolling(window=20).mean()
 
     df = df.dropna().reset_index(drop=False)
-    if 'index' in df.columns:
-        df = df.drop(columns=['index'])
+    for ghost_col in ('index', 'Date'):
+        if ghost_col in df.columns:
+            df = df.drop(columns=[ghost_col])
 
     return df
