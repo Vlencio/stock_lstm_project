@@ -40,11 +40,17 @@ def validate_no_lookahead(
     target = df[target_col].values
 
     for col in feature_cols:
+        if col == target_col:
+            continue  # Close-vs-Close is always 1.0 — not lookahead, skip silently
+
         feat = df[col].values
         # Drop NaN positions before computing correlation
         mask = ~(np.isnan(feat) | np.isnan(target))
         if mask.sum() < 10:
             continue
+        if np.std(feat[mask]) == 0:
+            continue  # Constant feature: correlation undefined, skip silently
+
         corr = float(np.corrcoef(feat[mask], target[mask])[0, 1])
         if abs(corr) >= CORRELATION_WARNING_THRESHOLD:
             logger.warning(

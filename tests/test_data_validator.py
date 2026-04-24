@@ -35,8 +35,10 @@ def test_warns_when_feature_highly_correlated_with_target(caplog):
     })
     with caplog.at_level(logging.WARNING):
         validate_no_lookahead(df, feature_cols=['leaky'], target_col='target')
-    messages = ' '.join(r.message for r in caplog.records)
-    assert 'leaky' in messages or 'WARNING' in messages.upper() or '0.9' in messages
+    assert any(
+        r.levelno == logging.WARNING and 'leaky' in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_raises_if_target_col_missing():
