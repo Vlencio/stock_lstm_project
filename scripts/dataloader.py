@@ -17,7 +17,7 @@ def main():
     parquer_files = sorted(glob.glob(f"{args.data_dir}/*.parquet"))
 
     # Create dataset
-    dataset = StockDataset(parquet_files=parquer_files, window=args.window)
+    dataset = StockDataset(data_source=parquer_files, window=args.window)
 
     # split dataset into train, val, test
     splits = create_time_series_splits(

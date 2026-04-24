@@ -35,12 +35,14 @@ class StockDataset(Dataset):
             raw_features = df.select(feature_cols).to_numpy()
             self.target_idx = feature_cols.index(target_col)
         else:
-            # Accept numpy array directly (used internally by create_datasets_with_scaler)
+            # Accept numpy array directly (used internally by create_datasets_with_scaler).
+            # Caller must set dataset.target_idx after construction if target is not col 0.
             raw_features = data_source
-            self.target_idx = 0  # caller manages column ordering
+            self.target_idx = 0
 
         self.window = window
-        self.feature_cols = feature_cols
+        # Store feature_cols even in the numpy path so callers can introspect column names.
+        self.feature_cols = feature_cols if feature_cols is not None else []
 
         if scaler is None:
             self.scaler = TimeSeriesScaler(scaler_type='minmax', feature_range=(0, 1))
