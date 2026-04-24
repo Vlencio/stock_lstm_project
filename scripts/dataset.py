@@ -1,3 +1,10 @@
+"""
+Dataset utilities for LSTM stock prediction.
+
+StockDataset wraps a list of parquet files into a PyTorch Dataset.
+Each sample is (window_of_features, next_close_price), both in normalized scale.
+The scaler is fit ONLY on training data to prevent data leakage.
+"""
 import torch
 from torch.utils.data import Dataset, Subset
 import polars as pl
@@ -5,139 +12,129 @@ import numpy as np
 import sys
 from pathlib import Path
 
-# Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.scaler import TimeSeriesScaler
 
+
 class StockDataset(Dataset):
-    def __init__(self, parquet_files, window=30, feature_cols=['Close'], 
-                 scaler=None, fit_scaler=True):
+    def __init__(self, data_source, window=30, feature_cols=None,
+                 target_col='Close', scaler=None, fit_scaler=True):
         """
-        Stock dataset with normalization support
-        
         Args:
-            parquet_files: List of parquet files to load
-            window: Lookback window size
-            feature_cols: List of feature column names
-            scaler: TimeSeriesScaler object (if None, creates new one)
-            fit_scaler: Whether to fit the scaler on this data
+            data_source: List of parquet file paths OR a numpy array (n_rows, n_features).
+            window: Number of past timesteps fed to the LSTM.
+            feature_cols: Column names to use as features (must include target_col).
+            target_col: Column to predict (must be in feature_cols).
+            scaler: Pre-fitted TimeSeriesScaler. If None, creates and fits one.
+            fit_scaler: Whether to fit the scaler on this data (set False for val/test).
         """
-        self.data = pl.concat([pl.read_parquet(f) for f in sorted(parquet_files)])
+        if isinstance(data_source, (list, tuple)):
+            df = pl.concat([pl.read_parquet(f) for f in sorted(data_source)])
+            if feature_cols is None:
+                feature_cols = ['Close']
+            raw_features = df.select(feature_cols).to_numpy()
+            self.target_idx = feature_cols.index(target_col)
+        else:
+            # Accept numpy array directly (used internally by create_datasets_with_scaler)
+            raw_features = data_source
+            self.target_idx = 0  # caller manages column ordering
+
         self.window = window
         self.feature_cols = feature_cols
-        
-        # Extract features as numpy array
-        self.raw_features = self.data.select(feature_cols).to_numpy()
-        
-        # Initialize or use provided scaler
+
         if scaler is None:
             self.scaler = TimeSeriesScaler(scaler_type='minmax', feature_range=(0, 1))
             if fit_scaler:
-                self.scaler.fit(self.raw_features)
+                self.scaler.fit(raw_features)
         else:
             self.scaler = scaler
-        
-        # Normalize features
-        self.features = self.scaler.transform(self.raw_features)
-        
+
+        self.features = self.scaler.transform(raw_features)
+
     def __len__(self):
         return len(self.features) - self.window
-    
+
     def __getitem__(self, idx):
-        x = self.features[idx:idx+self.window]
-        y = self.features[idx+self.window]
-        
-        # Handle multi-feature case
-        if len(self.feature_cols) == 1:
-            y = y[0]  # Extract single value for single feature
-        
-        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
-    
+        x = self.features[idx:idx + self.window]            # (window, n_features)
+        y = self.features[idx + self.window, self.target_idx]  # scalar: next Close
+        return (
+            torch.tensor(x, dtype=torch.float32),
+            torch.tensor(float(y), dtype=torch.float32),
+        )
+
     def get_scaler(self):
-        """Get the scaler used for normalization"""
         return self.scaler
-    
+
     def inverse_transform(self, data):
-        """Inverse transform normalized data back to original scale"""
         return self.scaler.inverse_transform(data)
 
 
 def create_time_series_splits(dataset, train_ratio=0.7, val_ratio=0.15):
-    """
-    Creates train/val/test splits for time series data maintaining temporal order.
-    
-    Args:
-        dataset: PyTorch Dataset object
-        train_ratio: Proportion for training (default 0.7)
-        val_ratio: Proportion for validation (default 0.15)
-    
-    Returns:
-        Dictionary with train, val, and test Subset objects
-    """
+    """Temporal train/val/test split — never shuffled."""
     total_size = len(dataset)
     train_size = int(total_size * train_ratio)
     val_size = int(total_size * val_ratio)
-    
-    # Sequential indices (no shuffling!)
-    train_indices = list(range(0, train_size))
-    val_indices = list(range(train_size, train_size + val_size))
-    test_indices = list(range(train_size + val_size, total_size))
-    
-    splits = {
-        'train': Subset(dataset, train_indices),
-        'val': Subset(dataset, val_indices),
-        'test': Subset(dataset, test_indices)
+
+    return {
+        'train': Subset(dataset, list(range(0, train_size))),
+        'val': Subset(dataset, list(range(train_size, train_size + val_size))),
+        'test': Subset(dataset, list(range(train_size + val_size, total_size))),
     }
-    
-    return splits
 
 
-def create_datasets_with_scaler(parquet_files, window=30, train_ratio=0.7, val_ratio=0.15,
-                                feature_cols=["('Close', 'AAPL')"], scaler_type='minmax'):
+def create_datasets_with_scaler(
+    parquet_files,
+    window=30,
+    train_ratio=0.7,
+    val_ratio=0.15,
+    feature_cols=None,
+    target_col='Close',
+    scaler_type='minmax',
+):
     """
-    Create train/val/test datasets with proper scaler fitting
-    
+    Creates train/val/test datasets with scaler fitted only on training data.
+
     Args:
-        parquet_files: List of parquet files
-        window: Lookback window
-        train_ratio: Training data ratio
-        val_ratio: Validation data ratio
-        feature_cols: List of feature columns
-        scaler_type: Type of scaler ('minmax' or 'standard')
-    
+        parquet_files: List of parquet file paths (loaded and concatenated).
+        window: Lookback window size.
+        train_ratio: Fraction of data for training.
+        val_ratio: Fraction of data for validation.
+        feature_cols: Feature column names. Defaults to ['Close'].
+        target_col: Column to predict (scalar output). Must be in feature_cols.
+        scaler_type: 'minmax' or 'standard'.
+
     Returns:
-        Dictionary with train, val, test datasets and fitted scaler
+        Dict with keys: train, val, test (Subset objects), scaler, dataset.
     """
-    # Load all data
+    if feature_cols is None:
+        feature_cols = ['Close']
+
     all_data = pl.concat([pl.read_parquet(f) for f in sorted(parquet_files)])
     raw_features = all_data.select(feature_cols).to_numpy()
-    
-    # Calculate split points
-    total_size = len(raw_features)
-    train_size = int(total_size * train_ratio)
-    val_size = int(total_size * val_ratio)
-    
-    # IMPORTANT: Fit scaler ONLY on training data to avoid data leakage
-    train_features = raw_features[:train_size]
+    target_idx = feature_cols.index(target_col)
+
+    # Fit scaler ONLY on training data to prevent data leakage.
+    train_size = int(len(raw_features) * train_ratio)
     scaler = TimeSeriesScaler(scaler_type=scaler_type, feature_range=(0, 1))
-    scaler.fit(train_features)
-    
-    # Create dataset with fitted scaler (don't refit)
+    scaler.fit(raw_features[:train_size])
+
+    # Build dataset using pre-fitted scaler (no re-fitting).
     dataset = StockDataset(
-        parquet_files, 
-        window=window, 
+        data_source=raw_features,
+        window=window,
         feature_cols=feature_cols,
+        target_col=target_col,
         scaler=scaler,
-        fit_scaler=False  # Already fitted on training data
+        fit_scaler=False,
     )
-    
-    # Create splits
+    dataset.target_idx = target_idx
+
     splits = create_time_series_splits(dataset, train_ratio, val_ratio)
-    
+
     return {
         'train': splits['train'],
         'val': splits['val'],
         'test': splits['test'],
         'scaler': scaler,
-        'dataset': dataset
+        'dataset': dataset,
     }
