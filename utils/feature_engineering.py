@@ -82,8 +82,10 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['Volume_SMA_20'] = volume.rolling(window=20).mean()
 
     df = df.dropna().reset_index(drop=False)
-    for ghost_col in ('index', 'Date'):
-        if ghost_col in df.columns:
-            df = df.drop(columns=[ghost_col])
+    # Drop the auto-generated integer index column if present.
+    # Preserve 'Date' when the input had a named DatetimeIndex so callers can
+    # reconstruct a DatetimeIndex for the parquet file.
+    if 'index' in df.columns:
+        df = df.drop(columns=['index'])
 
     return df

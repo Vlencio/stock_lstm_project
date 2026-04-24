@@ -38,6 +38,12 @@ def download_stock_data(symbol: str, start: str, end: str, interval: str) -> pd.
     # Keep only the 5 OHLCV columns we need.
     data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
     data.index.name = 'Date'
+
+    if data.empty:
+        raise RuntimeError(
+            f"yfinance returned no data for '{symbol}' ({start} → {end}, interval={interval}). "
+            "Check symbol spelling, date range, and network access."
+        )
     return data
 
 
@@ -51,12 +57,15 @@ def save_raw_by_year(data: pd.DataFrame, out_dir: str) -> None:
 
 
 def save_processed(data: pd.DataFrame, symbol: str, out_dir: str) -> None:
-    """Apply feature engineering and save single enriched parquet."""
+    """Apply feature engineering and save single enriched parquet with DatetimeIndex."""
     enriched = add_technical_indicators(data.copy())
+    # Restore DatetimeIndex from 'Date' column so downstream consumers can align predictions.
+    if 'Date' in enriched.columns:
+        enriched = enriched.set_index('Date')
     file_path = os.path.join(out_dir, f'{symbol}.parquet')
     enriched.to_parquet(file_path, index=True)
     print(f"Saved processed data ({len(enriched)} rows, {len(enriched.columns)} cols) → {file_path}")
-    print(f"Feature columns: {FEATURE_COLS}")
+    print(f"Feature columns: {enriched.columns.tolist()}")
 
 
 def main():
