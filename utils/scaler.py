@@ -136,8 +136,8 @@ class TimeSeriesScaler:
                 }
                 # Add fitted parameters if scaler has been fitted
                 if hasattr(self.scaler, 'data_min_'):
-                    params['min'] = float(self.scaler.data_min_[0])
-                    params['max'] = float(self.scaler.data_max_[0])
+                    params['min'] = self.scaler.data_min_.tolist()
+                    params['max'] = self.scaler.data_max_.tolist()
                 return params
             else:
                 params = {
@@ -145,8 +145,8 @@ class TimeSeriesScaler:
                 }
                 # Add fitted parameters if scaler has been fitted
                 if hasattr(self.scaler, 'mean_'):
-                    params['mean'] = float(self.scaler.mean_[0])
-                    params['std'] = float(self.scaler.scale_[0])
+                    params['mean'] = self.scaler.mean_.tolist()
+                    params['std'] = self.scaler.scale_.tolist()
                 return params
         except Exception as e:
             # Fallback to basic info if conversion fails

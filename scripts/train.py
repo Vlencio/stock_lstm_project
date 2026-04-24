@@ -298,8 +298,12 @@ def main():
     # Resolve data file — one parquet per symbol in processed dir
     parquet_files = glob.glob(f"{args.data_dir}/{args.symbol}.parquet")
     if not parquet_files:
-        # Fallback: load all parquets if no symbol-specific file found
         parquet_files = sorted(glob.glob(f"{args.data_dir}/*.parquet"))
+        if len(parquet_files) > 1:
+            raise FileNotFoundError(
+                f"Symbol '{args.symbol}.parquet' not found and multiple parquet files exist "
+                f"in {args.data_dir}. Specify --symbol explicitly."
+            )
 
     if not parquet_files:
         raise FileNotFoundError(
@@ -333,10 +337,10 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    # Model — input_size matches number of features (dynamic, not hardcoded)
-    input_size = len(FEATURE_COLS)
+    # Store input_size in args so checkpoints are self-describing for inference.
+    args.input_size = len(FEATURE_COLS)
     model = StockLSTM(
-        input_size=input_size,
+        input_size=args.input_size,
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
         dropout=args.dropout,
