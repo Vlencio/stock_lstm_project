@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 import argparse
 import time
 import glob
+import joblib
 import sys
 from pathlib import Path
 from colorama import Fore, Style
@@ -22,6 +23,7 @@ sys.path.insert(0, str(parent_dir))
 # Import local modules
 from scripts.model import StockLSTM
 from scripts.dataset import create_datasets_with_scaler
+from utils.feature_engineering import FEATURE_COLS, TARGET_COL
 from utils.logger import TrainingLogger
 from utils.reporter import TrainingReporter
 from utils.progress import ColoredProgress, TrainingProgressBar, ValidationProgressBar
@@ -68,6 +70,11 @@ class Trainer:
         scaler_path = self.checkpoint_dir / 'scaler.pkl'
         self.scaler.save(scaler_path)
         ColoredProgress.print_success(f"Scaler saved to {scaler_path}")
+
+        # Also save with joblib for use by backtest/paper_trade
+        joblib_path = self.checkpoint_dir / 'scaler_joblib.pkl'
+        joblib.dump(scaler.scaler, str(joblib_path))
+        ColoredProgress.print_success(f"Joblib scaler saved to {joblib_path}")
     
     def save_checkpoint(self, epoch, val_loss, is_best=False):
         """Save model checkpoint"""
@@ -258,75 +265,87 @@ class Trainer:
 
 def main():
     parser = argparse.ArgumentParser(description='Train LSTM for Stock Prediction')
-    
+
     # Data arguments
-    parser.add_argument('--data_dir', type=str, required=True)
+    parser.add_argument('--data_dir', type=str, default='data/processed',
+                        help='Directory containing processed parquet files (output of collect_data.py)')
+    parser.add_argument('--symbol', type=str, default='AAPL',
+                        help='Ticker symbol — must match a <SYMBOL>.parquet file in data_dir')
     parser.add_argument('--window', type=int, default=30)
     parser.add_argument('--train_ratio', type=float, default=0.7)
     parser.add_argument('--val_ratio', type=float, default=0.15)
     parser.add_argument('--scaler_type', type=str, default='minmax', choices=['minmax', 'standard'])
-    
+
     # Model arguments
     parser.add_argument('--hidden_size', type=int, default=128)
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--dropout', type=float, default=0.2)
-    
+
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--grad_clip', type=float, default=1.0)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     # Save directories
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints')
     parser.add_argument('--log_dir', type=str, default='logs')
     parser.add_argument('--experiment_name', type=str, default='stock_lstm')
-    
+
     args = parser.parse_args()
-    
-    # Load data with proper normalization
-    parquet_files = sorted(glob.glob(f"{args.data_dir}/*.parquet"))
-    
-    ColoredProgress.print_info(f"Loading data from {len(parquet_files)} parquet files...")
-    
+
+    # Resolve data file — one parquet per symbol in processed dir
+    parquet_files = glob.glob(f"{args.data_dir}/{args.symbol}.parquet")
+    if not parquet_files:
+        # Fallback: load all parquets if no symbol-specific file found
+        parquet_files = sorted(glob.glob(f"{args.data_dir}/*.parquet"))
+
+    if not parquet_files:
+        raise FileNotFoundError(
+            f"No parquet files found in {args.data_dir}. "
+            f"Run collect_data.py first to generate processed data."
+        )
+
+    ColoredProgress.print_info(f"Loading data from: {parquet_files}")
+
     data_dict = create_datasets_with_scaler(
         parquet_files,
         window=args.window,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
-        feature_cols=["('Close', 'AAPL')"],
-        scaler_type=args.scaler_type
+        feature_cols=FEATURE_COLS,
+        target_col=TARGET_COL,
+        scaler_type=args.scaler_type,
     )
-    
-    # Extract components
+
     train_dataset = data_dict['train']
     val_dataset = data_dict['val']
-    test_dataset = data_dict['test']
     scaler = data_dict['scaler']
-    
-    ColoredProgress.print_success(f"Data loaded and normalized using {args.scaler_type} scaler")
-    ColoredProgress.print_info(f"Train samples: {len(train_dataset)}")
-    ColoredProgress.print_info(f"Val samples: {len(val_dataset)}")
-    ColoredProgress.print_info(f"Test samples: {len(test_dataset)}\n")
-    
-    # Create dataloaders
+
+    ColoredProgress.print_success(f"Data loaded using {args.scaler_type} scaler")
+    ColoredProgress.print_info(f"Features: {len(FEATURE_COLS)} columns")
+    ColoredProgress.print_info(
+        f"Train / Val / Test: {len(train_dataset)} / {len(val_dataset)} / {len(data_dict['test'])}\n"
+    )
+
+    # DataLoaders — training shuffles batch order (not sequence order), val is sequential
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
-    
-    # Initialize model
+
+    # Model — input_size matches number of features (dynamic, not hardcoded)
+    input_size = len(FEATURE_COLS)
     model = StockLSTM(
-        input_size=1,
+        input_size=input_size,
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
-        dropout=args.dropout
+        dropout=args.dropout,
+        output_size=1,
     ).to(args.device)
-    
-    # Loss and optimizer
+
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    
-    # Train
+
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -336,9 +355,9 @@ def main():
         device=args.device,
         checkpoint_dir=args.checkpoint_dir,
         scaler=scaler,
-        args=args
+        args=args,
     )
-    
+
     trainer.train()
 
 
