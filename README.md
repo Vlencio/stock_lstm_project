@@ -1,96 +1,153 @@
-# Predição de Ações com LSTM
+# Stock LSTM — Quantitative Trading System
 
-## 📊 Visão Geral
+An end-to-end quantitative trading system built with PyTorch. Collects historical OHLCV data, engineers 20 technical features, trains an LSTM model to predict next-close prices, backtests the strategy with vectorbt, manages risk with fixed-fractional position sizing, and executes paper trades via Alpaca — all monitored through a Streamlit dashboard.
 
-Este projeto implementa um modelo LSTM (Long Short-Term Memory) para predição de preços de ações utilizando PyTorch. O sistema inclui coleta de dados históricos, pré-processamento, treinamento do modelo e visualização de resultados.
+---
 
-## 🚀 Funcionalidades
+## Features
 
-- Coleta automática de dados históricos de ações via Yahoo Finance
-- Pré-processamento e normalização dos dados
-- Modelo LSTM customizável para predição de séries temporais
-- Sistema completo de logging e visualização do treinamento
-- Geração de relatórios e métricas de performance
-- Dashboard para análise de resultados (ainda não é interativo, são próximos passos)
+- **Feature Engineering** — 20 technical indicators (EMA 9/21/50, MACD, RSI, Stochastic, Bollinger Bands, ATR, OBV, Volume SMA)
+- **Leak-free training** — scaler fitted only on training data; temporal splits (70/15/15), never shuffled
+- **Backtesting** — vectorbt-powered simulation with equity curve, drawdown, and trade return plots
+- **Risk Management** — fixed-fractional position sizing, max drawdown circuit breaker, daily trade limit
+- **Paper Trading** — Alpaca API integration, APScheduler cron (every 15 min during market hours)
+- **Dashboard** — Streamlit 4-page app: Overview, Trades, Model Performance, Logs
+- **Data Validation** — correlation-based lookahead leak detector
 
-## 📁 Estrutura do Projeto
+---
+
+## Project Structure
 
 ```
-├── checkpoints/         # Modelos salvos e checkpoints
-├── data/               # Dados brutos e processados
-├── logs/               # Logs de treinamento
-├── plots/              # Gráficos e visualizações
-├── scripts/            # Scripts principais
-│   ├── collect_data.py # Coleta de dados
-│   ├── train.py       # Treinamento do modelo
-│   └── model.py       # Definição do modelo
-└── utils/              # Utilitários
-    ├── logger.py      # Sistema de logging
-    ├── reporter.py    # Geração de relatórios
-    ├── scaler.py     # Normalização de dados
-    └── visualizer.py  # Visualizações
+stock_lstm_project/
+├── scripts/
+│   ├── collect_data.py     # Download OHLCV + compute indicators → data/processed/
+│   ├── dataset.py          # StockDataset, temporal splits, scaler wiring
+│   ├── model.py            # StockLSTM (configurable layers/hidden size)
+│   ├── train.py            # Training loop with checkpointing and logging
+│   ├── backtest.py         # vectorbt backtest + RiskManager signal gate
+│   └── paper_trade.py      # Live paper trading via Alpaca + APScheduler
+├── utils/
+│   ├── feature_engineering.py  # FEATURE_COLS, TARGET_COL, add_technical_indicators()
+│   ├── scaler.py               # TimeSeriesScaler (MinMax / Standard)
+│   ├── risk_manager.py         # RiskManager — position sizing + circuit breakers
+│   ├── market_hours.py         # NYSE hours guard (America/New_York)
+│   ├── data_validator.py       # Lookahead leak correlation check
+│   ├── logger.py               # TrainingLogger
+│   ├── reporter.py             # TrainingReporter
+│   ├── visualizer.py           # Loss / prediction plots
+│   └── progress.py             # Colored progress bars
+├── dashboard/
+│   └── app.py              # Streamlit monitoring dashboard
+├── tests/
+│   ├── test_feature_engineering.py
+│   ├── test_data_validator.py
+│   ├── test_risk_manager.py
+│   └── test_market_hours.py
+├── data/
+│   ├── raw/                # Per-year parquet files from yfinance
+│   └── processed/          # Enriched parquet (DatetimeIndex, 20 feature cols)
+├── checkpoints/            # Model checkpoints + scaler (.pkl)
+├── logs/                   # Training logs + backtest_results.json
+└── plots/                  # Training loss curve + backtest charts
 ```
 
-## 🔧 Requisitos
+---
 
-- Python 3.8+
-- PyTorch
-- pandas
-- yfinance
-- polars
-- matplotlib
-- tqdm
-- colorama
-
-## ⚙️ Instalação
+## Installation
 
 ```bash
-# Clone o repositório
-git clone https://github.com/seu-usuario/stock-lstm-project.git
-
-# Instale as dependências
+git clone https://github.com/Vlencio/stock_lstm_project.git
+cd stock_lstm_project
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 📈 Uso
+---
 
-### 1. Coleta de Dados
+## Usage
 
-```bash
-python scripts/collect_data.py --symbol AAPL --start 2010-01-01 --end 2023-12-31
-```
-
-### 2. Pré-processamento
-
-Aqui por enquanto apenas apresentamos os dados coletados, modificações futuras para melhorar o pré processamento, otimização de memória e feature engineering para melhora de desempenho
+### 1. Collect & engineer data
 
 ```bash
-python scripts/preprocess_data.py --file data/raw/2023.parquet
+python scripts/collect_data.py --symbol AAPL --start 2018-01-01 --end 2024-01-01
 ```
 
-### 3. Treinamento
+Saves `data/processed/AAPL.parquet` with a DatetimeIndex and 20 feature columns.
+
+### 2. Train the model
 
 ```bash
-python scripts/train.py --epochs 50 --batch-size 32 --lr 0.001
+python -m scripts.train --symbol AAPL --epochs 50 --hidden_size 128 --num_layers 2
 ```
 
-### 4. Visualização após estar treinado
+Key options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `AAPL` | Ticker (must match a file in `--data_dir`) |
+| `--epochs` | `50` | Training epochs |
+| `--hidden_size` | `128` | LSTM hidden units |
+| `--num_layers` | `2` | LSTM layers |
+| `--dropout` | `0.2` | Dropout rate |
+| `--lr` | `0.001` | Learning rate |
+| `--scaler_type` | `minmax` | `minmax` or `standard` |
+
+Saves `checkpoints/best_model.pth` and `checkpoints/scaler.pkl`.
+
+### 3. Backtest
 
 ```bash
-python scripts/evaluate.py --checkpoint checkpoints/best_model.pth --data_dir data/raw --output_dir plots
+python scripts/backtest.py --checkpoint checkpoints/best_model.pth
 ```
 
-## 📊 Visualização de Resultados
+Outputs:
+- `logs/backtest_results.json` — return, Sharpe, drawdown, win rate
+- `plots/backtest/equity_curve.png`
+- `plots/backtest/drawdown.png`
+- `plots/backtest/trade_returns.png`
 
-O projeto gera automaticamente:
+### 4. Launch dashboard
 
-- Gráficos de perdas de treino/validação
-- Comparações entre predições e valores reais
-- Distribuição de erros
-- Métricas de performance (MAE, RMSE, MAPE)
+```bash
+streamlit run dashboard/app.py
+```
 
-## 📝 Logs e Relatórios
+Opens a 4-page Streamlit app: Overview, Trades, Model Performance, Logs.
 
-- Logs detalhados são salvos em `logs/`
-- Relatórios de treinamento em formato JSON
-- Métricas e parâmetros são registrados para cada experimento
+### 5. Paper trading (optional)
+
+Create a `.env` file in the project root:
+
+```
+ALPACA_API_KEY=your_key
+ALPACA_SECRET_KEY=your_secret
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
+```
+
+Then run:
+
+```bash
+python scripts/paper_trade.py --checkpoint checkpoints/best_model.pth --symbol AAPL
+```
+
+The scheduler fires every 15 minutes on weekdays between 09:30–16:00 Eastern. Trades are gated by `RiskManager` before submission.
+
+---
+
+## Tests
+
+```bash
+pytest tests/ -v
+```
+
+25 tests across feature engineering, data validation, risk management, and market hours.
+
+---
+
+## Architecture Notes
+
+- `FEATURE_COLS` in `utils/feature_engineering.py` is the single source of truth for feature names and order — imported by `collect_data`, `dataset`, and `train`.
+- The scaler is fit **only on training data** (first 70% of rows) to prevent data leakage. Val and test sets are transformed with the same fitted scaler.
+- Inverse-transforming a single predicted value requires a full-width dummy array (`np.zeros((1, 20))`), since the MinMaxScaler was fit on all 20 features.
+- `args.input_size` is stored inside each checkpoint so the model can be reconstructed at inference time without re-specifying flags.
